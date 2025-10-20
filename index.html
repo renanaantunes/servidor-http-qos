@@ -1,27 +1,30 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-br">
 <head>
-    <meta charset="UTF-8">
-    <title>Servidor HTTP com QoS</title>
-    <style>
-        body { 
-            font-family: Arial, sans-serif; 
-            background: #f4f4f4; 
-            text-align: center; 
-            padding: 30px;
-        }
-        h1 { color: #2b7cff; }
-        img { width: 400px; margin: 10px; border-radius: 10px; box-shadow: 0 0 10px #aaa; }
-    </style>
+  <meta charset="UTF-8">
+  <title>Servidor HTTP com QoS</title>
+  <style>
+    body {
+      background-color: #111;
+      color: #eee;
+      text-align: center;
+      font-family: Arial, sans-serif;
+    }
+    h1 { color: #4CAF50; }
+    img {
+      width: 600px;
+      margin: 20px;
+      border: 2px solid #4CAF50;
+      border-radius: 10px;
+    }
+  </style>
 </head>
 <body>
-    <h1>Servidor HTTP com QoS (Trabalho Prático)</h1>
-    <p>Teste de envio de objetos com controle de taxa (QoS) e múltiplas conexões concorrentes.</p>
-
-    <img src="img1.jpg" alt="Imagem 1 - Teste de vazão">
-    <img src="img2.jpg" alt="Imagem 2 - Teste de vazão">
-    <img src="img3.jpg" alt="Imagem 3 - Teste de vazão">
-
-    <p>Use <code>wget</code> ou <code>curl</code> para medir o comportamento.</p>
+  <h1>Servidor HTTP com Controle de QoS</h1>
+  <p>As três imagens abaixo são servidas com controle de taxa por IP.</p>
+  <img src="img1.jpg" alt="Imagem 1">
+  <img src="img2.jpg" alt="Imagem 2">
+  <img src="img3.jpg" alt="Imagem 3">
+  <p><em>Desenvolvido por Renan Antunes e equipe</em></p>
 </body>
 </html>
