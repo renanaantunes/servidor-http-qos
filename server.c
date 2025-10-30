@@ -63,13 +63,14 @@ void load_ip_rates() {
     fclose(f);
 }
 
+// CÓDIGO CORRIGIDO
 int total_kbps_in_use(){
     int total=0;
-    pthread_mutex_lock(&lock);
+    // O lock NÃO é mais pego aqui
     for(Client*c=clients;c;c=c->next)
         if(c->conns>0)
             total += (c->kbps_cfg>0?c->kbps_cfg:KBPS_DEFAULT);
-    pthread_mutex_unlock(&lock);
+    // O unlock NÃO é mais feito aqui
     return total;
 }
 
@@ -93,6 +94,7 @@ void rate_send(int sock, int fd, long size, int kbps_per_conn) {
     }
 }
 
+// VERSÃO CORRIGIDA PARA HTTP 1.1
 void *handle(void *arg) {
     int sock = *(int*)arg; free(arg);
     struct sockaddr_in addr; socklen_t alen = sizeof(addr);
@@ -101,6 +103,7 @@ void *handle(void *arg) {
 
     Client *c = get_client(ip);
 
+    // --- Início: Controle de Admissão (feito 1 vez por conexão) ---
     pthread_mutex_lock(&lock);
     c->conns++;
     int active = c->conns;
@@ -110,45 +113,104 @@ void *handle(void *arg) {
 
     if (total > max_kbps) {
         send_err(sock,503,"Service Unavailable");
-        close(sock);
-        pthread_mutex_lock(&lock); c->conns--; pthread_mutex_unlock(&lock);
-        return NULL;
+        goto end; // Rejeita a conexão, pula para o fim
     }
+    // --- Fim: Controle de Admissão ---
 
-    char req[512]; recv(sock, req, sizeof(req)-1, 0);
-    char path[256]; if (sscanf(req,"GET %255s",path)!=1){ send_err(sock,400,"Bad Request"); goto end; }
-    if (strstr(path,"..")){ send_err(sock,400,"Invalid Path"); goto end; }
+    // --- Início: Definir Timeout do Socket ---
+    // Define um timeout de 15 segundos. Se o cliente não enviar
+    // uma nova requisição nesse tempo, recv() falhará.
+    struct timeval tv;
+    tv.tv_sec = 15; // 15 segundos
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+    // --- Fim: Timeout ---
 
-    char full[512]; snprintf(full,sizeof(full),"%s%s",www,path);
-    if (full[strlen(full)-1]=='/') strcat(full,"index.html");
 
-    int fd = open(full,O_RDONLY);
-    if (fd<0){ send_err(sock,404,"Not Found"); goto end; }
+    // --- Início: Loop Principal de Requisições (HTTP 1.1) ---
+    while(running) {
+        char req[512];
+        int r = recv(sock, req, sizeof(req)-1, 0);
 
-    int is_html = strstr(full,".html")!=NULL;
-    char hdr[128]; long len = lseek(fd,0,SEEK_END); lseek(fd,0,SEEK_SET);
-    sprintf(hdr,"HTTP/1.1 200 OK\r\nContent-Length:%ld\r\n\r\n",len);
-    send(sock,hdr,strlen(hdr),0);
-
-    int kbps_conn = is_html ? 0 : (cfg / (active>0?active:1));
-    rate_send(sock,fd,len,kbps_conn);
-    close(fd);
-
-    if (is_html) {
-        pthread_mutex_lock(&lock);
-        c->last_html = now_ms();
-        pthread_mutex_unlock(&lock);
-    } else {
-        pthread_mutex_lock(&lock);
-        if (c->last_html>0) {
-            c->rtt = now_ms() - c->last_html;
-            c->last_html = 0;
+        // Se recv() retornar 0 ou menos, o cliente desconectou ou deu timeout
+        if (r <= 0) {
+            break; // Sai do loop while
         }
+        req[r] = 0; // Garante que a string termina
+
+        // Verifica se o cliente pediu para fechar a conexão
+        int keep_alive = 1;
+        if (strstr(req, "Connection: close")) {
+            keep_alive = 0;
+        }
+
+        char path[256]; 
+        if (sscanf(req,"GET %255s",path)!=1){ 
+            send_err(sock,400,"Bad Request");
+            continue; // Erro, mas continua no loop esperando próxima req
+        }
+        if (strstr(path,"..")){ 
+            send_err(sock,400,"Invalid Path"); 
+            continue; // Erro, mas continua no loop
+        }
+
+        char full[512]; snprintf(full,sizeof(full),"%s%s",www,path);
+        if (full[strlen(full)-1]=='/') strcat(full,"index.html");
+
+        int fd = open(full,O_RDONLY);
+        if (fd<0){ 
+            send_err(sock,404,"Not Found"); 
+            continue; // Erro, mas continua no loop
+        }
+
+        int is_html = strstr(full,".html")!=NULL;
+
+        // Atualiza o número de conexões ativas *deste* IP
+        // para dividir a banda corretamente 
+        pthread_mutex_lock(&lock);
+        active = c->conns; 
         pthread_mutex_unlock(&lock);
-    }
+        
+        char hdr[256]; // Buffer maior para o novo cabeçalho
+        long len = lseek(fd,0,SEEK_END); lseek(fd,0,SEEK_SET);
+        
+        // Envia o cabeçalho HTTP 1.1 correto
+        sprintf(hdr,"HTTP/1.1 200 OK\r\nContent-Length:%ld\r\nConnection: %s\r\n\r\n",
+                len,
+                keep_alive ? "keep-alive" : "close");
+        send(sock,hdr,strlen(hdr),0);
+
+        // Envia o arquivo com controle de taxa [cite: 35]
+        int kbps_conn = is_html ? 0 : (cfg / (active>0?active:1));
+        rate_send(sock,fd,len,kbps_conn);
+        close(fd);
+
+        // --- Início: Lógica RTT [cite: 37] ---
+        if (is_html) {
+            pthread_mutex_lock(&lock);
+            c->last_html = now_ms();
+            pthread_mutex_unlock(&lock);
+        } else {
+            pthread_mutex_lock(&lock);
+            if (c->last_html>0) {
+                c->rtt = now_ms() - c->last_html;
+                c->last_html = 0; // Reseta para a próxima medição
+            }
+            pthread_mutex_unlock(&lock);
+        }
+        // --- Fim: Lógica RTT ---
+
+        // Se o cliente pediu para fechar, saímos do loop
+        if (!keep_alive) {
+            break;
+        }
+
+    } // --- Fim: Loop Principal de Requisições ---
 
 end:
-    close(sock);
+    close(sock); // O socket só é fechado aqui, no fim da thread
+
+    // Libera o "slot" de conexão
     pthread_mutex_lock(&lock);
     c->conns--;
     pthread_mutex_unlock(&lock);
